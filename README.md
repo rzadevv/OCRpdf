@@ -10,8 +10,6 @@ Turn scanned PDFs into searchable PDFs. Works with any PDF that contains images 
   - macOS: `brew install tesseract`
   - Linux: `sudo apt-get install tesseract-ocr`
 
-No need to install Poppler - everything else is handled by Python packages.
-
 ## Setup
 
 ```bash
