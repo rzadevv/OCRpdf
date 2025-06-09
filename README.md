@@ -63,6 +63,6 @@ For multiple languages use `+` like: `eng+deu+fra`
 
 ## File sizes
 
-The tool automatically optimizes output size. A 240-page PDF that would normally be 1.4GB becomes ~300MB.
+The tool automatically optimizes output size.
 
 To disable optimization: `python ocr_pdf.py file.pdf --no-optimize`
