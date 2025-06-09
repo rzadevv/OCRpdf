@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""
-PDF OCR Tool - Convert scanned PDFs to searchable PDFs
-"""
+# Takes scanned PDFs and makes them searchable using OCR
+# Basically converts images in PDFs to text that you can search/copy
+
 import argparse
 import os
 import sys
@@ -9,11 +9,11 @@ import tempfile
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-import pytesseract
-import fitz  # PyMuPDF
+import pytesseract  # does the actual OCR magic
+import fitz  # PyMuPDF - handles PDF stuff without needing poppler
 from PIL import Image
-from PyPDF2 import PdfWriter, PdfReader
-from tqdm import tqdm
+from PyPDF2 import PdfWriter, PdfReader  # for combining pages back into PDF
+from tqdm import tqdm  # progress bars
 
 from error_handlers import (
     PdfOcrError, InputFileError, TesseractError, OutputError,
@@ -24,78 +24,62 @@ from error_handlers import (
 
 class PdfOcr:
     def __init__(self, dpi: int = 300, language: str = "eng", optimize_size: bool = True):
-        """
-        Initialize the PDF OCR processor
-
-        Args:
-            dpi: DPI resolution for PDF to image conversion
-            language: Tesseract language code (e.g., 'eng', 'fra', 'deu', etc.)
-            optimize_size: Whether to optimize output file size (default: True)
-        """
         self.dpi = dpi
         self.language = language
         self.optimize_size = optimize_size
 
-        # For size optimization, use lower DPI for OCR while maintaining visual quality
+        # if optimizing, use lower DPI for OCR (200 is plenty for text recognition)
+        # but keep original DPI for display quality
         self.ocr_dpi = min(dpi, 200) if optimize_size else dpi
 
-        # Verify required dependencies
+        # make sure we have the tools we need
         verify_tesseract_installed()
         verify_pymupdf_installed()
     
     def process_file(self, input_path: str, output_path: Optional[str] = None) -> str:
-        """
-        Process a single PDF file and create a searchable version
-        
-        Args:
-            input_path: Path to input PDF file
-            output_path: Path to save the output PDF file (if None, will use input_path + "_searchable.pdf")
-            
-        Returns:
-            Path to the output file
-        """
-        # Validate input file
+        # check that the input file exists and is actually a PDF
         verify_input_file(input_path)
-        
+
         input_path = Path(input_path)
-        
+
+        # if no output name given, just add "_searchable" to the original name
         if not output_path:
             output_path = str(input_path.parent / f"{input_path.stem}_searchable.pdf")
-        
-        # Validate output location
+
+        # make sure we can write to the output location
         verify_output_location(output_path)
-        
+
         print(f"Processing: {input_path}")
         print(f"Output will be saved to: {output_path}")
-        
+
         try:
-            # Create a temporary directory for processing
+            # use a temp folder for all the intermediate files
             with tempfile.TemporaryDirectory() as temp_dir:
-                # Convert PDF to images using PyMuPDF
+                # step 1: turn PDF pages into image files
                 print("Converting PDF to images...")
                 images = self._convert_pdf_to_images(str(input_path), temp_dir)
 
-                # Process each page
+                # step 2: run OCR on each image and make mini PDFs
                 print(f"Performing OCR on {len(images)} pages...")
                 pdf_writer = PdfWriter()
 
                 for i, image_path in enumerate(tqdm(images, desc="OCR Processing")):
-                    # Perform OCR and generate a searchable PDF for this page
+                    # OCR this page and save as a small PDF
                     searchable_page_path = os.path.join(temp_dir, f"searchable_page_{i}.pdf")
                     self._ocr_page(image_path, searchable_page_path)
 
-                    # Add the searchable page to our output PDF
+                    # add this page to our final PDF
                     pdf_reader = PdfReader(searchable_page_path)
                     if len(pdf_reader.pages) > 0:
                         pdf_writer.append(pdf_reader)
                     else:
                         print(f"Warning: OCR produced empty page for page {i+1}")
 
-                # Save the final PDF
+                # step 3: save the combined PDF
                 with open(output_path, 'wb') as output_file:
                     pdf_writer.write(output_file)
 
-                # Post-process with PyMuPDF for additional compression if optimization is enabled
+                # step 4: compress it to make the file smaller
                 if self.optimize_size:
                     self._compress_pdf(output_path)
             
@@ -155,48 +139,37 @@ class PdfOcr:
         return output_paths
 
     def _convert_pdf_to_images(self, pdf_path: str, temp_dir: str) -> List[str]:
-        """
-        Convert PDF pages to images using PyMuPDF (no external dependencies)
-
-        Args:
-            pdf_path: Path to the PDF file
-            temp_dir: Temporary directory to save images
-
-        Returns:
-            List of paths to the generated image files
-        """
+        # turn each PDF page into a JPEG image file
         image_paths = []
 
         try:
-            # Open the PDF document
             pdf_document = fitz.open(pdf_path)
 
-            # Calculate zoom factor based on OCR DPI (optimized for size)
-            # PyMuPDF default is 72 DPI, so we calculate zoom to get desired DPI
+            # figure out the zoom level to get the DPI we want
+            # PyMuPDF uses 72 DPI by default, so we scale from there
             zoom = self.ocr_dpi / 72.0
             mat = fitz.Matrix(zoom, zoom)
 
             for page_num in range(len(pdf_document)):
-                # Get the page
                 page = pdf_document[page_num]
 
-                # Render page to image with optimized settings
-                pix = page.get_pixmap(matrix=mat, alpha=False)  # No alpha channel to reduce size
+                # render this page as an image
+                # alpha=False means no transparency, which makes files smaller
+                pix = page.get_pixmap(matrix=mat, alpha=False)
 
-                # Convert to PIL Image for compression
-                img_data = pix.tobytes("jpeg", jpg_quality=85)  # Use JPEG with 85% quality
+                # convert to JPEG with decent quality (85% is good balance of size vs quality)
+                img_data = pix.tobytes("jpeg", jpg_quality=85)
 
-                # Save as JPEG for better compression
+                # save the image file
                 image_path = os.path.join(temp_dir, f"page_{page_num}.jpg")
                 with open(image_path, 'wb') as f:
                     f.write(img_data)
 
                 image_paths.append(image_path)
 
-                # Clean up pixmap
+                # free up memory
                 pix = None
 
-            # Close the document
             pdf_document.close()
 
         except Exception as e:
@@ -205,22 +178,15 @@ class PdfOcr:
         return image_paths
 
     def _ocr_page(self, image_path: str, output_path: str) -> None:
-        """
-        Perform OCR on a single page image and create a searchable PDF
-
-        Args:
-            image_path: Path to the image file
-            output_path: Path to save the output searchable PDF
-        """
+        # take an image and turn it into a searchable PDF page
         try:
-            # Configure tesseract for optimized output
+            # tesseract config - if we're optimizing, use settings that make smaller files
             if self.optimize_size:
-                # Use configuration that optimizes for smaller file size
                 config = '-c tessedit_create_pdf=1 -c textonly_pdf=0'
             else:
                 config = ''
 
-            # Use pytesseract to create a searchable PDF with the text layer
+            # this is where the magic happens - tesseract reads the image and makes a PDF
             pdf_data = pytesseract.image_to_pdf_or_hocr(
                 image_path,
                 extension='pdf',
@@ -228,7 +194,7 @@ class PdfOcr:
                 config=config
             )
 
-            # Write the PDF data to the output file
+            # save the PDF data to a file
             with open(output_path, 'wb') as f:
                 f.write(pdf_data)
 
@@ -236,27 +202,21 @@ class PdfOcr:
             raise TesseractError(f"OCR processing failed: {str(e)}")
 
     def _compress_pdf(self, pdf_path: str) -> None:
-        """
-        Compress the final PDF using PyMuPDF for additional size reduction
-
-        Args:
-            pdf_path: Path to the PDF file to compress
-        """
+        # squeeze the final PDF to make it smaller
         try:
             print("Compressing final PDF...")
 
-            # Open the PDF with PyMuPDF
             doc = fitz.open(pdf_path)
 
-            # Save with compression options
-            # deflate=1: Enable compression
-            # garbage=4: Remove unused objects
-            # clean=1: Clean up the PDF structure
+            # these settings compress the PDF and remove junk
+            # deflate=1: zip compression
+            # garbage=4: remove unused stuff
+            # clean=1: tidy up the file structure
             doc.save(pdf_path, deflate=1, garbage=4, clean=1)
             doc.close()
 
         except Exception as e:
-            # If compression fails, just log a warning but don't fail the whole process
+            # if compression fails, don't crash the whole thing
             print(f"Warning: PDF compression failed: {str(e)}")
 
 
